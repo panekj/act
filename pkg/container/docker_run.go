@@ -64,6 +64,17 @@ func supportsContainerImagePlatform(ctx context.Context, cli client.APIClient) b
 	return constraint.Check(sv)
 }
 
+func (cr *containerReference) ConnectToNetwork(name string) common.Executor {
+	return common.
+		NewDebugExecutor("%sdocker network connect %s %s", logPrefix, name, cr.input.Name).
+		Then(
+			common.NewPipelineExecutor(
+				cr.connect(),
+				cr.connectToNetwork(name),
+			).IfNot(common.Dryrun),
+		)
+}
+
 func (cr *containerReference) Create(capAdd []string, capDrop []string) common.Executor {
 	return common.
 		NewInfoExecutor("%sdocker create image=%s platform=%s entrypoint=%+q cmd=%+q", logPrefix, cr.input.Image, cr.input.Platform, cr.input.Entrypoint, cr.input.Cmd).
@@ -250,6 +261,12 @@ func RunnerArch(ctx context.Context) string {
 		return arch
 	}
 	return info.Architecture
+}
+
+func (cr *containerReference) connectToNetwork(name string) common.Executor {
+	return func(ctx context.Context) error {
+		return cr.cli.NetworkConnect(ctx, name, cr.input.Name, nil)
+	}
 }
 
 func (cr *containerReference) connect() common.Executor {

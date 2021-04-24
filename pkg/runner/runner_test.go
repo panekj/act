@@ -541,6 +541,23 @@ func TestRunActionInputs(t *testing.T) {
 	tjfi.runTest(context.Background(), t, &Config{Inputs: inputs})
 }
 
+func TestRunWithService(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	workflowPath := "services"
+
+	tjfi := &TestJobFileInfo{
+		workdir:      workdir,
+		workflowPath: workflowPath,
+		eventName:    "push",
+		platforms:    platforms,
+		errorMessage: "",
+	}
+	tjfi.runTest(context.Background(), t, &Config{})
+}
+
 func TestRunEventPullRequest(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

@@ -38,6 +38,7 @@ type FileEntry struct {
 // Container for managing docker run containers
 type Container interface {
 	Create(capAdd []string, capDrop []string) common.Executor
+	ConnectToNetwork(name string) common.Executor
 	Copy(destPath string, files ...*FileEntry) common.Executor
 	CopyDir(destPath string, srcPath string, useGitIgnore bool) common.Executor
 	GetContainerArchive(ctx context.Context, srcPath string) (io.ReadCloser, error)

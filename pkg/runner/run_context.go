@@ -49,6 +49,7 @@ type RunContext struct {
 	Masks               []string
 	cleanUpJobContainer common.Executor
 	caller              *caller // job calling this RunContext (reusable workflows)
+	ServiceContainers   []container.ExecutionsEnvironment
 }
 
 func (rc *RunContext) AddMask(mask string) {
@@ -250,6 +251,33 @@ func (rc *RunContext) startJobContainer() common.Executor {
 			return nil
 		}
 
+		for name, spec := range rc.Run.Job().Services {
+			mergedEnv := envList
+			for k, v := range spec.Env {
+				mergedEnv = append(mergedEnv, fmt.Sprintf("%s=%s", k, v))
+			}
+
+			mnt := mounts
+			mnt[name] = ext.ToContainerPath(rc.Config.Workdir)
+
+			c := container.NewContainer(&container.NewContainerInput{
+				Name:       name,
+				WorkingDir: ext.ToContainerPath(rc.Config.Workdir),
+				Image:      spec.Image,
+				Username:   rc.Config.Secrets["DOCKER_USERNAME"],
+				Password:   rc.Config.Secrets["DOCKER_PASSWORD"],
+				Env:        mergedEnv,
+				Mounts:     mnt,
+				Binds:      binds,
+				Stdout:     logWriter,
+				Stderr:     logWriter,
+				Privileged: rc.Config.Privileged,
+				UsernsMode: rc.Config.UsernsMode,
+				Platform:   rc.Config.ContainerArchitecture,
+			})
+			rc.ServiceContainers = append(rc.ServiceContainers, c)
+		}
+
 		rc.JobContainer = container.NewContainer(&container.NewContainerInput{
 			Cmd:         nil,
 			Entrypoint:  []string{"tail", "-f", "/dev/null"},
@@ -275,9 +303,14 @@ func (rc *RunContext) startJobContainer() common.Executor {
 
 		return common.NewPipelineExecutor(
 			rc.JobContainer.Pull(rc.Config.ForcePull),
+			rc.stopServiceContainers(),
 			rc.stopJobContainer(),
+			rc.removeNetwork(),
+			rc.createNetwork(),
+			rc.startServiceContainers(),
 			rc.JobContainer.Create(rc.Config.ContainerCapAdd, rc.Config.ContainerCapDrop),
 			rc.JobContainer.Start(false),
+			rc.JobContainer.ConnectToNetwork(defaultNetwork),
 			rc.JobContainer.Copy(rc.JobContainer.GetActPath()+"/", &container.FileEntry{
 				Name: "workflow/event.json",
 				Mode: 0o644,
@@ -288,6 +321,20 @@ func (rc *RunContext) startJobContainer() common.Executor {
 				Body: "",
 			}),
 		)(ctx)
+	}
+}
+
+const defaultNetwork = "act_github_actions_network"
+
+func (rc *RunContext) createNetwork() common.Executor {
+	return func(ctx context.Context) error {
+		return container.NewDockerNetworkCreateExecutor(defaultNetwork)(ctx)
+	}
+}
+
+func (rc *RunContext) removeNetwork() common.Executor {
+	return func(ctx context.Context) error {
+		return container.NewDockerNetworkRemoveExecutor(defaultNetwork)(ctx)
 	}
 }
 
@@ -352,7 +399,30 @@ func (rc *RunContext) stopJobContainer() common.Executor {
 	}
 }
 
-// Prepare the mounts and binds for the worker
+func (rc *RunContext) startServiceContainers() common.Executor {
+	return func(ctx context.Context) error {
+		execs := []common.Executor{}
+		for _, c := range rc.ServiceContainers {
+			execs = append(execs, common.NewPipelineExecutor(
+				c.Pull(false),
+				c.Create([]string{}, []string{}),
+				c.Start(false),
+				c.ConnectToNetwork(defaultNetwork),
+			))
+		}
+		return common.NewParallelExecutor(0, execs...)(ctx)
+	}
+}
+
+func (rc *RunContext) stopServiceContainers() common.Executor {
+	return func(ctx context.Context) error {
+		execs := []common.Executor{}
+		for _, c := range rc.ServiceContainers {
+			execs = append(execs, c.Remove())
+		}
+		return common.NewParallelExecutor(0, execs...)(ctx)
+	}
+}
 
 // ActionCacheDir is for rc
 func (rc *RunContext) ActionCacheDir() string {
