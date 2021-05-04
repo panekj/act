@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/docker/docker/api/types"
 	"github.com/mitchellh/go-homedir"
 	"github.com/opencontainers/selinux/go-selinux"
 	log "github.com/sirupsen/logrus"
@@ -49,7 +50,7 @@ type RunContext struct {
 	Masks               []string
 	cleanUpJobContainer common.Executor
 	caller              *caller // job calling this RunContext (reusable workflows)
-	ServiceContainers   []container.ExecutionsEnvironment
+	ServiceContainers   map[string]container.ExecutionsEnvironment
 }
 
 func (rc *RunContext) AddMask(mask string) {
@@ -140,6 +141,11 @@ func (rc *RunContext) GetBindsAndMounts() ([]string, map[string]string) {
 	return binds, mounts
 }
 
+// JobNetworkName returns formatted network name used in main container and its services
+func (rc *RunContext) JobNetworkName() string {
+	return createNetworkName("act", rc.Run.Workflow.Name, rc.Run.JobID, rc.Name)
+}
+
 func (rc *RunContext) startHostEnvironment() common.Executor {
 	return func(ctx context.Context) error {
 		logger := common.Logger(ctx)
@@ -228,8 +234,11 @@ func (rc *RunContext) startJobContainer() common.Executor {
 			return fmt.Errorf("failed to handle credentials: %s", err)
 		}
 
+		job := rc.Run.Job()
+
 		logger.Infof("\U0001f680  Start image=%s", image)
 		name := rc.jobContainerName()
+		networkName := rc.JobNetworkName()
 
 		envList := make([]string, 0)
 
@@ -242,76 +251,92 @@ func (rc *RunContext) startJobContainer() common.Executor {
 		ext := container.LinuxContainerEnvironmentExtensions{}
 		binds, mounts := rc.GetBindsAndMounts()
 
+		if job.Services != nil {
+			rc.ServiceContainers = make(map[string]container.ExecutionsEnvironment, len(job.Services))
+
+			for name, spec := range rc.Run.Job().Services {
+				mergedEnv := envList
+				for k, v := range spec.Env {
+					mergedEnv = append(mergedEnv, fmt.Sprintf("%s=%s", k, v))
+				}
+
+				mnt := mounts
+				mnt[name] = ext.ToContainerPath(rc.Config.Workdir)
+
+				c := container.NewContainer(&container.NewContainerInput{
+					Name:       name,
+					Hostname:   name,
+					WorkingDir: ext.ToContainerPath(rc.Config.Workdir),
+					Image:      spec.Image,
+					Username:   rc.Config.Secrets["DOCKER_USERNAME"],
+					Password:   rc.Config.Secrets["DOCKER_PASSWORD"],
+					Env:        mergedEnv,
+					Mounts:     mnt,
+					Binds:      binds,
+					Stdout:     logWriter,
+					Stderr:     logWriter,
+					Privileged: rc.Config.Privileged,
+					UsernsMode: rc.Config.UsernsMode,
+					Platform:   rc.Config.ContainerArchitecture,
+				})
+				rc.ServiceContainers[name] = c
+			}
+		}
+
+		rc.JobContainer = container.NewContainer(&container.NewContainerInput{
+			Cmd:        nil,
+			Entrypoint: []string{"tail", "-f", "/dev/null"},
+			WorkingDir: ext.ToContainerPath(rc.Config.Workdir),
+			Image:      image,
+			Username:   username,
+			Password:   password,
+			Name:       name,
+			Hostname:   hostname,
+			Env:        envList,
+			Mounts:     mounts,
+			Binds:      binds,
+			Stdout:     logWriter,
+			Stderr:     logWriter,
+			Privileged: rc.Config.Privileged,
+			UsernsMode: rc.Config.UsernsMode,
+			Platform:   rc.Config.ContainerArchitecture,
+			Options:    rc.options(ctx),
+		})
+
 		rc.cleanUpJobContainer = func(ctx context.Context) error {
 			if rc.JobContainer != nil && !rc.Config.ReuseContainers {
-				return rc.JobContainer.Remove().
-					Then(container.NewDockerVolumeRemoveExecutor(rc.jobContainerName(), false)).
-					Then(container.NewDockerVolumeRemoveExecutor(rc.jobContainerName()+"-env", false))(ctx)
+				return common.NewPipelineExecutor(
+					rc.stopServiceContainers(),
+					rc.JobContainer.Remove().
+						Then(container.NewDockerVolumeRemoveExecutor(rc.jobContainerName(), false)).
+						Then(container.NewDockerVolumeRemoveExecutor(rc.jobContainerName()+"-env", false)),
+					rc.removeNetwork(rc.JobNetworkName()).IfBool((rc.Run.Job().Services != nil || rc.Run.Job().Container() != nil) && !rc.Config.ReuseContainers && container.DockerNetworkExists(ctx, rc.JobNetworkName)),
+				)(ctx)
 			}
 			return nil
 		}
 
-		for name, spec := range rc.Run.Job().Services {
-			mergedEnv := envList
-			for k, v := range spec.Env {
-				mergedEnv = append(mergedEnv, fmt.Sprintf("%s=%s", k, v))
-			}
-
-			mnt := mounts
-			mnt[name] = ext.ToContainerPath(rc.Config.Workdir)
-
-			c := container.NewContainer(&container.NewContainerInput{
-				Name:       name,
-				WorkingDir: ext.ToContainerPath(rc.Config.Workdir),
-				Image:      spec.Image,
-				Username:   rc.Config.Secrets["DOCKER_USERNAME"],
-				Password:   rc.Config.Secrets["DOCKER_PASSWORD"],
-				Env:        mergedEnv,
-				Mounts:     mnt,
-				Binds:      binds,
-				Stdout:     logWriter,
-				Stderr:     logWriter,
-				Privileged: rc.Config.Privileged,
-				UsernsMode: rc.Config.UsernsMode,
-				Platform:   rc.Config.ContainerArchitecture,
-			})
-			rc.ServiceContainers = append(rc.ServiceContainers, c)
-		}
-
-		rc.JobContainer = container.NewContainer(&container.NewContainerInput{
-			Cmd:         nil,
-			Entrypoint:  []string{"tail", "-f", "/dev/null"},
-			WorkingDir:  ext.ToContainerPath(rc.Config.Workdir),
-			Image:       image,
-			Username:    username,
-			Password:    password,
-			Name:        name,
-			Env:         envList,
-			Mounts:      mounts,
-			NetworkMode: "host",
-			Binds:       binds,
-			Stdout:      logWriter,
-			Stderr:      logWriter,
-			Privileged:  rc.Config.Privileged,
-			UsernsMode:  rc.Config.UsernsMode,
-			Platform:    rc.Config.ContainerArchitecture,
-			Options:     rc.options(ctx),
-		})
 		if rc.JobContainer == nil {
 			return errors.New("Failed to create job container")
 		}
 
-		networkName := fmt.Sprintf("act-%s-network", rc.Run.JobID)
+		if job.Services == nil {
+			rc.JobContainer.SetContainerNetworkMode("host")
+		}
+
 		return common.NewPipelineExecutor(
 			rc.JobContainer.Pull(rc.Config.ForcePull),
 			rc.stopServiceContainers(),
 			rc.stopJobContainer(),
-			rc.removeNetwork(networkName),
-			rc.createNetwork(networkName),
-			rc.startServiceContainers(networkName),
+			common.NewPipelineExecutor(
+				rc.createNetwork(networkName, types.NetworkCreate{CheckDuplicate: true}).IfBool(!container.DockerNetworkExists(ctx, networkName)),
+				rc.startServiceContainers(networkName),
+			).IfBool(job.Services != nil || job.Container() != nil),
 			rc.JobContainer.Create(rc.Config.ContainerCapAdd, rc.Config.ContainerCapDrop),
 			rc.JobContainer.Start(false),
-			rc.JobContainer.ConnectToNetwork(networkName),
+			common.NewPipelineExecutor(
+				rc.JobContainer.ConnectToNetwork(networkName),
+			).IfBool(job.Services != nil || job.Container() != nil),
 			rc.JobContainer.Copy(rc.JobContainer.GetActPath()+"/", &container.FileEntry{
 				Name: "workflow/event.json",
 				Mode: 0o644,
@@ -325,9 +350,9 @@ func (rc *RunContext) startJobContainer() common.Executor {
 	}
 }
 
-func (rc *RunContext) createNetwork(name string) common.Executor {
+func (rc *RunContext) createNetwork(name string, config types.NetworkCreate) common.Executor {
 	return func(ctx context.Context) error {
-		return container.NewDockerNetworkCreateExecutor(name)(ctx)
+		return container.NewDockerNetworkCreateExecutor(name, config)(ctx)
 	}
 }
 
@@ -403,10 +428,10 @@ func (rc *RunContext) startServiceContainers(networkName string) common.Executor
 		execs := []common.Executor{}
 		for _, c := range rc.ServiceContainers {
 			execs = append(execs, common.NewPipelineExecutor(
-				c.Pull(false),
+				c.Pull(rc.Config.ForcePull),
 				c.Create([]string{}, []string{}),
-				c.Start(false),
 				c.ConnectToNetwork(networkName),
+				c.Start(false),
 			))
 		}
 		return common.NewParallelExecutor(0, execs...)(ctx)
@@ -598,6 +623,10 @@ func createContainerName(parts ...string) string {
 	return fmt.Sprintf("%s-%x", trimmedName, hash)
 }
 
+func createNetworkName(parts ...string) string {
+	return strings.ReplaceAll(strings.Trim(strings.Join(parts, "_"), "-"), "--", "-")
+}
+
 func trimToLen(s string, l int) string {
 	if l < 0 {
 		l = 0
@@ -608,7 +637,19 @@ func trimToLen(s string, l int) string {
 	return s
 }
 
-func (rc *RunContext) getJobContext() *model.JobContext {
+type jobContext struct {
+	Status    string `json:"status"`
+	Container struct {
+		ID      string `json:"id"`
+		Network string `json:"network"`
+	} `json:"container"`
+	Services map[string]struct {
+		ID string `json:"id"`
+	} `json:"services"`
+}
+
+func (rc *RunContext) getJobContext() *jobContext {
+	job := rc.Run.Job()
 	jobStatus := "success"
 	for _, stepStatus := range rc.StepResults {
 		if stepStatus.Conclusion == model.StepStatusFailure {
@@ -616,8 +657,33 @@ func (rc *RunContext) getJobContext() *model.JobContext {
 			break
 		}
 	}
-	return &model.JobContext{
-		Status: jobStatus,
+	container := model.jobContainerContext{}
+	if job.Container() != nil {
+		container = model.jobContainerContext{
+			ID:      rc.JobContainer.ID(),
+			Network: "host",
+		}
+	}
+
+	services := make(map[string]model.jobServiceContext, len(job.Services))
+	for name, container := range rc.ServiceContainers {
+		service := job.Services[name]
+		ports := make(map[string]string, len(service.Ports))
+		for _, v := range service.Ports {
+			split := strings.Split(v, `:`)
+			ports[split[0]] = split[1]
+		}
+		services[name] = model.jobServiceContext{
+			ID:      container.ID(),
+			Network: rc.JobNetworkName(),
+			Ports:   ports,
+		}
+	}
+
+	return &model.jobContext{
+		Status:    jobStatus,
+		Container: container,
+		Services:  services,
 	}
 }
 

@@ -64,15 +64,8 @@ func supportsContainerImagePlatform(ctx context.Context, cli client.APIClient) b
 	return constraint.Check(sv)
 }
 
-func (cr *containerReference) ConnectToNetwork(name string) common.Executor {
-	return common.
-		NewDebugExecutor("%sdocker network connect %s %s", logPrefix, name, cr.input.Name).
-		Then(
-			common.NewPipelineExecutor(
-				cr.connect(),
-				cr.connectToNetwork(name),
-			).IfNot(common.Dryrun),
-		)
+func (cr *containerReference) ID() string {
+	return cr.id
 }
 
 func (cr *containerReference) Create(capAdd []string, capDrop []string) common.Executor {
@@ -125,11 +118,15 @@ func (cr *containerReference) Pull(forcePull bool) common.Executor {
 }
 
 func (cr *containerReference) Copy(destPath string, files ...*FileEntry) common.Executor {
-	return common.NewPipelineExecutor(
-		cr.connect(),
-		cr.find(),
-		cr.copyContent(destPath, files...),
-	).IfNot(common.Dryrun)
+	return common.
+		NewInfoExecutor("%sdocker cp destination=%s", logPrefix, destPath).
+		Then(
+			common.NewPipelineExecutor(
+				cr.connect(),
+				cr.find(),
+				cr.copyContent(destPath, files...),
+			).IfNot(common.Dryrun),
+		)
 }
 
 func (cr *containerReference) CopyDir(destPath string, srcPath string, useGitIgnore bool) common.Executor {
@@ -163,21 +160,28 @@ func (cr *containerReference) UpdateFromImageEnv(env *map[string]string) common.
 }
 
 func (cr *containerReference) Exec(command []string, env map[string]string, user, workdir string) common.Executor {
-	return common.NewPipelineExecutor(
-		common.NewInfoExecutor("%sdocker exec cmd=[%s] user=%s workdir=%s", logPrefix, strings.Join(command, " "), user, workdir),
-		cr.connect(),
-		cr.find(),
-		cr.exec(command, env, user, workdir),
-	).IfNot(common.Dryrun)
+	return common.
+		NewInfoExecutor("%sdocker exec cmd=%v user=%s workdir=%s", logPrefix, command, user, workdir).
+		Then(
+			common.NewPipelineExecutor(
+				cr.connect(),
+				cr.find(),
+				cr.exec(command, env, user, workdir),
+			).IfNot(common.Dryrun),
+		)
 }
 
 func (cr *containerReference) Remove() common.Executor {
-	return common.NewPipelineExecutor(
-		cr.connect(),
-		cr.find(),
-	).Finally(
-		cr.remove(),
-	).IfNot(common.Dryrun)
+	return common.
+		NewInfoExecutor("%sdocker rm %s", logPrefix, cr.id).
+		Then(
+			common.NewPipelineExecutor(
+				cr.connect(),
+				cr.find(),
+			).Finally(
+				cr.remove(),
+			).IfNot(common.Dryrun),
+		).IfBool(cr.id != "")
 }
 
 func (cr *containerReference) ReplaceLogWriter(stdout io.Writer, stderr io.Writer) (io.Writer, io.Writer) {
@@ -188,6 +192,31 @@ func (cr *containerReference) ReplaceLogWriter(stdout io.Writer, stderr io.Write
 	cr.input.Stderr = stderr
 
 	return out, err
+}
+
+func (cr *containerReference) SetContainerNetworkMode(mode string) common.Executor {
+	return common.
+		NewDebugExecutor("Changed network mode for container '%s' from '%s' to '%s'", cr.input.Name, cr.input.NetworkMode, mode).
+		Then(
+			common.NewPipelineExecutor(
+				func(ctx context.Context) error {
+					cr.input.NetworkMode = mode
+					return nil
+				},
+			).IfNot(common.Dryrun),
+		)
+}
+
+func (cr *containerReference) ConnectToNetwork(name string) common.Executor {
+	return common.
+		NewInfoExecutor("%sdocker network connect net=%s container=%s", logPrefix, name, cr.input.Name).
+		Then(
+			common.NewPipelineExecutor(
+				cr.connect(),
+				cr.find(),
+				cr.connectToNetwork(name),
+			).IfNot(common.Dryrun),
+		)
 }
 
 type containerReference struct {

@@ -34,6 +34,10 @@ type HostEnvironment struct {
 	StdOut    io.Writer
 }
 
+func (_ *HostEnvironment) ID() string {
+	return ""
+}
+
 func (e *HostEnvironment) Create(capAdd []string, capDrop []string) common.Executor {
 	return func(ctx context.Context) error {
 		return nil
@@ -42,6 +46,12 @@ func (e *HostEnvironment) Create(capAdd []string, capDrop []string) common.Execu
 
 func (e *HostEnvironment) ConnectToNetwork(name string) common.Executor {
 	return func(ctx context.Context) error {
+		return nil
+	}
+}
+
+func (e *HostEnvironment) SetContainerNetworkMode(_ string) common.Executor {
+	return func(_ context.Context) error {
 		return nil
 	}
 }

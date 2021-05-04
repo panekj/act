@@ -37,8 +37,8 @@ type FileEntry struct {
 
 // Container for managing docker run containers
 type Container interface {
+	ID() string
 	Create(capAdd []string, capDrop []string) common.Executor
-	ConnectToNetwork(name string) common.Executor
 	Copy(destPath string, files ...*FileEntry) common.Executor
 	CopyDir(destPath string, srcPath string, useGitIgnore bool) common.Executor
 	GetContainerArchive(ctx context.Context, srcPath string) (io.ReadCloser, error)
@@ -50,6 +50,8 @@ type Container interface {
 	Remove() common.Executor
 	Close() common.Executor
 	ReplaceLogWriter(io.Writer, io.Writer) (io.Writer, io.Writer)
+	ConnectToNetwork(name string) common.Executor
+	SetContainerNetworkMode(mode string) common.Executor
 }
 
 // NewDockerBuildExecutorInput the input for the NewDockerBuildExecutor function
