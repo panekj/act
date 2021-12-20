@@ -637,18 +637,7 @@ func trimToLen(s string, l int) string {
 	return s
 }
 
-type jobContext struct {
-	Status    string `json:"status"`
-	Container struct {
-		ID      string `json:"id"`
-		Network string `json:"network"`
-	} `json:"container"`
-	Services map[string]struct {
-		ID string `json:"id"`
-	} `json:"services"`
-}
-
-func (rc *RunContext) getJobContext() *jobContext {
+func (rc *RunContext) getJobContext() *model.JobContext {
 	job := rc.Run.Job()
 	jobStatus := "success"
 	for _, stepStatus := range rc.StepResults {
@@ -657,30 +646,32 @@ func (rc *RunContext) getJobContext() *jobContext {
 			break
 		}
 	}
-	container := model.jobContainerContext{}
+	container := model.JobContainerContext{}
 	if job.Container() != nil {
-		container = model.jobContainerContext{
+		container = model.JobContainerContext{
 			ID:      rc.JobContainer.ID(),
 			Network: "host",
 		}
 	}
 
-	services := make(map[string]model.jobServiceContext, len(job.Services))
-	for name, container := range rc.ServiceContainers {
-		service := job.Services[name]
-		ports := make(map[string]string, len(service.Ports))
-		for _, v := range service.Ports {
-			split := strings.Split(v, `:`)
-			ports[split[0]] = split[1]
-		}
-		services[name] = model.jobServiceContext{
-			ID:      container.ID(),
-			Network: rc.JobNetworkName(),
-			Ports:   ports,
+	services := make(map[string]model.JobServiceContext, len(job.Services))
+	if rc.ServiceContainers != nil {
+		for name, container := range rc.ServiceContainers {
+			service := job.Services[name]
+			ports := make(map[string]string, len(service.Ports))
+			for _, v := range service.Ports {
+				split := strings.Split(v, `:`)
+				ports[split[0]] = split[1]
+			}
+			services[name] = model.JobServiceContext{
+				ID:      container.ID(),
+				Network: rc.JobNetworkName(),
+				Ports:   ports,
+			}
 		}
 	}
 
-	return &model.jobContext{
+	return &model.JobContext{
 		Status:    jobStatus,
 		Container: container,
 		Services:  services,
