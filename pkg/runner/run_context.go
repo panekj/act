@@ -291,7 +291,7 @@ func (rc *RunContext) startJobContainer() common.Executor {
 			Username:   username,
 			Password:   password,
 			Name:       name,
-			Hostname:   hostname,
+			Hostname:   name,
 			Env:        envList,
 			Mounts:     mounts,
 			Binds:      binds,
@@ -307,10 +307,10 @@ func (rc *RunContext) startJobContainer() common.Executor {
 			if rc.JobContainer != nil && !rc.Config.ReuseContainers {
 				return common.NewPipelineExecutor(
 					rc.stopServiceContainers(),
-					rc.JobContainer.Remove().
-						Then(container.NewDockerVolumeRemoveExecutor(rc.jobContainerName(), false)).
-						Then(container.NewDockerVolumeRemoveExecutor(rc.jobContainerName()+"-env", false)),
-					rc.removeNetwork(rc.JobNetworkName()).IfBool((rc.Run.Job().Services != nil || rc.Run.Job().Container() != nil) && !rc.Config.ReuseContainers && container.DockerNetworkExists(ctx, rc.JobNetworkName)),
+					rc.JobContainer.Remove(),
+					container.NewDockerVolumeRemoveExecutor(rc.jobContainerName(), false),
+					container.NewDockerVolumeRemoveExecutor(rc.jobContainerName()+"-env", false),
+					rc.removeNetwork(rc.JobNetworkName()).IfBool((rc.Run.Job().Services != nil || rc.Run.Job().Container() != nil)),
 				)(ctx)
 			}
 			return nil

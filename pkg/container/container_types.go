@@ -19,6 +19,7 @@ type NewContainerInput struct {
 	Binds       []string
 	Mounts      map[string]string
 	Name        string
+	Hostname    string
 	Stdout      io.Writer
 	Stderr      io.Writer
 	NetworkMode string
