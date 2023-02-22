@@ -2,8 +2,8 @@ package model
 
 type JobContext struct {
 	Status    string                       `json:"status"`
-	Container jobContainerContext          `json:"container"`
-	Services  map[string]jobServiceContext `json:"services"`
+	Container JobContainerContext          `json:"container"`
+	Services  map[string]JobServiceContext `json:"services"`
 }
 
 type JobContainerContext struct {
